@@ -37,9 +37,14 @@ class AudioFile:
                 audio = audio[:,0]
 
             if sr != target_sr: # convert to a common sampling rate
-                print("Warning: Overwriting file {} with SR: {}, dtype: {}".format(file_path,target_sr, audio.dtype))
-                audio = librosa.core.resample(audio,sr,target_sr) 
-                wavfile.write(file_path,target_sr,audio)
+                print("Warning: Resampling file {} with SR: {}, dtype: {}".format(file_path,target_sr, audio.dtype))
+                self.audio_original = audio
+                self.sr_original = sr
+                audio = librosa.core.resample(audio, sr, target_sr) 
+                # wavfile.write(file_path,target_sr,audio)
+            else:
+                self.audio_original = audio
+                self.sr_original = target_sr
             self.sr, self.audio = target_sr, audio
         self.nsamples = len(self.audio)
         self.duration = self.nsamples/self.sr
@@ -56,15 +61,31 @@ class AudioFile:
         audio_window = self.audio[start_idx:end_idx]
         if mode=='audio':
             return audio_window 
+        elif mode=='audio_orig_sr':
+            start_idx = int(start_idx*self.sr_original/self.sr)
+            end_idx = int(end_idx*self.sr_original/self.sr)
+            return self.audio_original[start_idx:end_idx]
         elif mode=='spec':
-            spec = np.abs(librosa.core.stft(audio_window,n_fft=params.N_FFT)) # ok with defaults n_fft=2048, hop 1/4th
+            spec = np.abs(librosa.core.stft(
+                audio_window,
+                n_fft=params.N_FFT,
+                hop_length=int(params.HOP_S*self.sr)
+                )) # ok with defaults n_fft=2048 
             return np.log(spec).T # dimension: T x F
         elif mode=='mel_spec':
-            spec = np.abs(librosa.core.stft(audio_window,n_fft=params.N_FFT)) # ok with defaults n_fft=2048, hop 1/4th
+            spec = np.abs(librosa.core.stft(
+                audio_window,
+                n_fft=params.N_FFT,
+                hop_length=int(params.HOP_S*self.sr)
+                )) # ok with defaults n_fft=2048
             # roughly trying out some params based on https://seaworld.org/animals/all-about/killer-whale/communication/
             mel_fbank = librosa.filters.mel(
-                self.sr,n_fft=params.N_FFT,n_mels=params.N_MELS,
-                fmin=params.MEL_MIN_FREQ,fmax=params.MEL_MAX_FREQ)
+                self.sr,
+                n_fft=params.N_FFT,
+                n_mels=params.N_MELS,
+                fmin=params.MEL_MIN_FREQ,
+                fmax=params.MEL_MAX_FREQ
+            )
             mel_spec = np.dot(mel_fbank,spec)
             return np.log(mel_spec).T # dimension: T x F
 
@@ -92,7 +113,7 @@ class AudioFileDataset(Dataset):
             print("Loaded mean and invstd from:",mean,invstd)
         else:
             self.mean, self.invstd = None, None
-        assert get_mode in ['audio','spec','mel_spec']
+        assert get_mode in ['audio','spec','mel_spec', 'audio_orig_sr']
         self.sr, self.get_mode = sr, get_mode
         self.audio_files, self.segments, self.windows = {}, [], []
         for wav_filename in self.df.wav_filename.unique():
@@ -145,7 +166,7 @@ class AudioFileDataset(Dataset):
     def __getitem__(self,index):
         start_idx, end_idx, label, audio_file = self.windows[index]
         data = audio_file.get_window(start_idx,end_idx,self.get_mode)
-        if (self.mean is not None) and (self.invstd is not None) and self.get_mode != 'audio':
+        if (self.mean is not None) and (self.invstd is not None) and ('audio' not in self.get_mode):
             data -= self.mean
             data *= self.invstd 
         if self.transform is not None:
